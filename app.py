@@ -6,11 +6,12 @@ from Crypto.Util.Padding import pad
 from protobuf_decoder.protobuf_decoder import Parser
 import data_pb2
 
-# ====== CẤU HÌNH TÀI KHOẢN INFO ======
 INFO_ACCOUNT = {
     "uid": "7905431498",
     "password": "E1C3A316E3A3BEFA1DC8"
 }
+
+#7766520829 | xSex_3486605
 
 if sys.platform.startswith('win'):
     try:
@@ -24,17 +25,6 @@ if sys.platform.startswith('win'):
 AES_KEY = b"Yg&tc%DEuh6%Zc^8"
 AES_IV = b"6oyZDr22E3ychjM%"
 VN_TZ = timezone(timedelta(hours=7))
-
-# ====== CẤU HÌNH CHU KỲ RESET ======
-RESET_INTERVAL_HOURS = 2
-RESET_INTERVAL_SECONDS = RESET_INTERVAL_HOURS * 3600
-
-# ====== THÔNG TIN LIÊN HỆ ======
-TIKTOK = "@tyroxplayer"
-
-# ====== GIỚI HẠN BUFF LIKE ======
-DEFAULT_LIKES = 300
-MAX_LIKES = 300
 
 app = Flask(__name__)
 
@@ -57,12 +47,32 @@ stats_lock = threading.Lock()
 
 last_refresh_time = 0
 total_buffed_count = 0
-next_reset_at = 0
-
 
 def get_now_vn():
     return datetime.now(VN_TZ)
 
+def get_cycle_date_vn(dt=None):
+    if dt is None:
+        dt = get_now_vn()
+    # Chu kỳ ngày mới bắt đầu lúc 04:50 sáng giờ VN
+    if dt.hour < 4 or (dt.hour == 4 and dt.minute < 50):
+        return (dt.date() - timedelta(days=1)).strftime("%Y-%m-%d")
+    return dt.date().strftime("%Y-%m-%d")
+
+def get_seconds_until_450_am():
+    now = get_now_vn()
+    target = now.replace(hour=4, minute=50, second=0, microsecond=0)
+    if now >= target:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+def get_seconds_until_6h_refresh():
+    global last_refresh_time
+    if last_refresh_time == 0:
+        return 21600
+    elapsed = time.time() - last_refresh_time
+    remaining = 21600 - elapsed
+    return max(0, remaining)
 
 def get_file_md5(path):
     if not os.path.exists(path):
@@ -72,7 +82,6 @@ def get_file_md5(path):
             return hashlib.md5(f.read()).hexdigest()
     except Exception:
         return ""
-
 
 def decode_jwt_uid(token):
     if not token or not isinstance(token, str):
@@ -88,7 +97,6 @@ def decode_jwt_uid(token):
         pass
     return ""
 
-
 def load_json(path, default=None):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -97,7 +105,6 @@ def load_json(path, default=None):
     except Exception:
         return default or {}
 
-
 def save_json(path, data):
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -105,20 +112,14 @@ def save_json(path, data):
     except Exception:
         pass
 
-
-def get_last_reset_ts():
+def get_last_reset_date():
     state = load_json(STATE_FILE, {})
-    try:
-        return float(state.get("last_reset_ts", 0))
-    except (TypeError, ValueError):
-        return 0.0
+    return state.get("last_reset_date", "")
 
-
-def set_last_reset_ts(ts):
+def set_last_reset_date(date_str):
     state = load_json(STATE_FILE, {})
-    state["last_reset_ts"] = ts
+    state["last_reset_date"] = date_str
     save_json(STATE_FILE, state)
-
 
 def load_all_files():
     global accounts_data, tokens_data, dabuff_data, last_acc_hash
@@ -155,7 +156,6 @@ def load_all_files():
     with dabuff_lock:
         dabuff_data = set(str(x) for x in db_list)
 
-
 def save_tokens_file():
     with tokens_lock:
         tok_list = [
@@ -169,30 +169,12 @@ def save_tokens_file():
         ]
     save_json(QDZ_ACC_FILE, tok_list)
 
-
 def save_dabuff_file():
     with dabuff_lock:
         db_list = list(dabuff_data)
     save_json(DABUFF_FILE, db_list)
 
-
-def get_seconds_until_next_reset():
-    if next_reset_at <= 0:
-        return RESET_INTERVAL_SECONDS
-    return max(0, int(next_reset_at - time.time()))
-
-
-def get_seconds_until_6h_refresh():
-    global last_refresh_time
-    if last_refresh_time == 0:
-        return 21600
-    elapsed = time.time() - last_refresh_time
-    remaining = 21600 - elapsed
-    return max(0, remaining)
-
-
 def print_dashboard():
-    global next_reset_at
     with tokens_lock:
         total_tok = len(tokens_data)
         counts = [v["count"] for v in tokens_data.values()]
@@ -201,21 +183,18 @@ def print_dashboard():
         avg_cnt = (sum(counts) / total_tok) if total_tok else 0
     with dabuff_lock:
         total_dabuff = len(dabuff_data)
-
-    sec_reset = get_seconds_until_next_reset()
-    h_r, m_r = divmod(sec_reset // 60, 60)
+    sec_450 = int(get_seconds_until_450_am())
+    sec_6h = int(get_seconds_until_6h_refresh())
+    h_450, m_450 = divmod(sec_450 // 60, 60)
+    h_6h, m_6h = divmod(sec_6h // 60, 60)
     time_str = get_now_vn().strftime("%H:%M:%S %d/%m/%Y")
-    next_reset_str = datetime.fromtimestamp(next_reset_at, VN_TZ).strftime("%H:%M:%S %d/%m/%Y") if next_reset_at > 0 else "?"
-
-    print("\n" + "=" * 64)
+    
+    print("\n" + "="*58)
     print(f" TIME (VN): {time_str} | INFO TOKEN: {'OK' if info_token else 'NONE'}")
     print(f" TOTAL TOKENS   : {total_tok:<5} | MIN COUNT: {min_cnt:<4} | MAX COUNT: {max_cnt:<4} | AVG: {avg_cnt:.1f}")
-    print(f" DA BUFF CYCLE  : {total_dabuff:<5} | TOTAL BUFF SESSIONS: {total_buffed_count}")
-    print(f" NEXT RESET ({RESET_INTERVAL_HOURS}h): {next_reset_str} (sau {h_r:02d}h {m_r:02d}m)")
-    print(f" LIKES TARGET   : {DEFAULT_LIKES} (max {MAX_LIKES})")
-    print(f" TIKTOK         : {TIKTOK}")
-    print("=" * 64 + "\n")
-
+    print(f" DA BUFF TODAY  : {total_dabuff:<5} | TOTAL BUFF SESSIONS: {total_buffed_count}")
+    print(f" NEXT 6H REFRESH: {h_6h:02d}h {m_6h:02d}m | NEXT 4H50 RESET: {h_450:02d}h {m_450:02d}m")
+    print("="*58 + "\n")
 
 def encode_varint(value):
     out = []
@@ -229,18 +208,15 @@ def encode_varint(value):
             break
     return bytes(out)
 
-
 def encode_length_delimited(field_num, data):
     if isinstance(data, str):
         data = data.encode('utf-8')
     tag = (field_num << 3) | 2
     return encode_varint(tag) + encode_varint(len(data)) + data
 
-
 def encode_varint_field(field_num, value):
     tag = (field_num << 3) | 0
     return encode_varint(tag) + encode_varint(value)
-
 
 def create_protobuf_packet(fields):
     packet = bytearray()
@@ -262,7 +238,6 @@ def create_protobuf_packet(fields):
         elif isinstance(value, (str, bytes)):
             packet.extend(encode_length_delimited(field, value))
     return bytes(packet)
-
 
 def decode_protobuf(data):
     pos = 0
@@ -303,13 +278,13 @@ def decode_protobuf(data):
                     l |= (b & 0x7f) << s
                     if not (b & 0x80): break
                     s += 7
-                fields[field_num] = data[pos:pos + l]
+                fields[field_num] = data[pos:pos+l]
                 pos += l
             elif wire_type == 1:
-                fields[field_num] = data[pos:pos + 8]
+                fields[field_num] = data[pos:pos+8]
                 pos += 8
             elif wire_type == 5:
-                fields[field_num] = data[pos:pos + 4]
+                fields[field_num] = data[pos:pos+4]
                 pos += 4
             else:
                 break
@@ -317,11 +292,40 @@ def decode_protobuf(data):
             break
     return fields
 
-
 def aes_encrypt(data):
     cipher = AES.new(AES_KEY, AES.MODE_CBC, AES_IV)
     return cipher.encrypt(pad(data, AES.block_size))
 
+def parse_protobuf_result(raw_bytes):
+    try:
+        parser = Parser()
+        parsed = parser.parse(raw_bytes.hex())
+        d = {}
+        for r in parsed:
+            if r.field not in d:
+                d[r.field] = []
+            fd = {}
+            if r.wire_type in ["varint", "string", "bytes"]:
+                fd = r.data
+            elif r.wire_type == "length_delimited":
+                fd = parse_protobuf_result_nested(r.data.results)
+            d[r.field].append(fd)
+        return {k: v[0] if len(v) == 1 else v for k, v in d.items()}
+    except Exception:
+        return {}
+
+def parse_protobuf_result_nested(parsed):
+    d = {}
+    for r in parsed:
+        if r.field not in d:
+            d[r.field] = []
+        fd = {}
+        if r.wire_type in ["varint", "string", "bytes"]:
+            fd = r.data
+        elif r.wire_type == "length_delimited":
+            fd = parse_protobuf_result_nested(r.data.results)
+        d[r.field].append(fd)
+    return {k: v[0] if len(v) == 1 else v for k, v in d.items()}
 
 async def request_garena_access(uid, password, session):
     url = "https://100067.connect.garena.com/oauth/guest/token/grant"
@@ -357,7 +361,6 @@ async def request_garena_access(uid, password, session):
     except Exception:
         pass
     return None, None
-
 
 async def request_game_jwt(access_token, open_id, session):
     fields = {
@@ -444,7 +447,6 @@ async def request_game_jwt(access_token, open_id, session):
         pass
     return None
 
-
 async def login_single_account(uid, password, session, delay=0.0):
     if delay > 0:
         await asyncio.sleep(delay)
@@ -456,7 +458,6 @@ async def login_single_account(uid, password, session, delay=0.0):
         return uid, jwt
     except Exception:
         return uid, None
-
 
 async def refresh_info_token():
     global info_token
@@ -473,23 +474,22 @@ async def refresh_info_token():
             return True
     return False
 
-
 async def refresh_all_tokens_core(force_relogin=False):
     global accounts_data, tokens_data, last_refresh_time, last_acc_hash
-
+    
     new_acc_hash = get_file_md5(ACC_FILE)
     acc_changed = (last_acc_hash != "" and new_acc_hash != last_acc_hash)
-
+    
     acc_list = load_json(ACC_FILE, {})
     with accounts_lock:
-        old_acc_count = len(accounts_data)
-        accounts_data = {
-            str(uid): str(password)
-            for uid, password in acc_list.items()
-        }
-
+         old_acc_count = len(accounts_data)
+         accounts_data = {
+        str(uid): str(password)
+        for uid, password in acc_list.items()
+    }
+    
     if acc_changed:
-        print(f"[{get_now_vn().strftime('%H:%M:%S')}] [!] File acc.json đã thay đổi (Cũ: {old_acc_count} acc -> Mới: {len(accounts_data)} acc). Đang cập nhật...")
+        print(f"[{get_now_vn().strftime('%H:%M:%S')}] [!] File acc.json đã thay đổi (Cũ: {old_acc_count} acc -> Mới: {len(accounts_data)} acc). Đang cập nhật tài khoản...")
     last_acc_hash = new_acc_hash
 
     uid_counts = {}
@@ -498,7 +498,7 @@ async def refresh_all_tokens_core(force_relogin=False):
             u = v.get("uid") or decode_jwt_uid(t)
             if u:
                 uid_counts[str(u)] = max(uid_counts.get(str(u), 0), v.get("count", 0))
-
+                
     tok_list = load_json(QDZ_ACC_FILE, [])
     for item in tok_list:
         if isinstance(item, dict) and "token" in item:
@@ -508,27 +508,27 @@ async def refresh_all_tokens_core(force_relogin=False):
                 uid_counts[u] = max(uid_counts.get(u, 0), int(item.get("count", 0)))
 
     await refresh_info_token()
-
+    
     with accounts_lock:
         acc_items = list(accounts_data.items())
-
+    
     if not acc_items:
         print_dashboard()
         return
-
-    timeout = aiohttp.ClientTimeout(total=180)
-    new_tokens_map = {}
     
+    timeout = aiohttp.ClientTimeout(total=120)
+    new_tokens_map = {}
+    success_uids = set()
     async with aiohttp.ClientSession(timeout=timeout) as session:
+        # Lần 1: Chạy login đồng loạt toàn bộ tài khoản
         tasks = []
         for idx, (u, p) in enumerate(acc_items):
-            # Giãn cách mỗi request 0.15s để không bị Garena block IP
-            delay = idx * 0.15 
+            delay = 0.0 if idx < 200 else (idx - 200) * 0.05
             tasks.append(login_single_account(u, p, session, delay))
-
+        
         results = await asyncio.gather(*tasks, return_exceptions=True)
         now_ts = time.time()
-
+        
         retry_list = []
         for (u, p), res in zip(acc_items, results):
             u_str = str(u).strip()
@@ -540,22 +540,23 @@ async def refresh_all_tokens_core(force_relogin=False):
                     "timestamp": now_ts,
                     "uid": u_str
                 }
+                success_uids.add(u_str)
             else:
                 retry_list.append((u, p))
-
+        
         if retry_list:
-            print(f"[{get_now_vn().strftime('%H:%M:%S')}] Có {len(retry_list)}/{len(acc_items)} acc lỗi. Chờ 5s thử lại...")
+            print(f"[{get_now_vn().strftime('%H:%M:%S')}] Có {len(retry_list)}/{len(acc_items)} tài khoản chưa lấy được token. Tạm bỏ qua, chờ 3s lấy lại lần 2...")
             await asyncio.sleep(5)
-
+            
             retry_tasks = []
             for idx, (u, p) in enumerate(retry_list):
-                delay = idx * 0.2
+                delay = idx * 0.05
                 retry_tasks.append(login_single_account(u, p, session, delay))
-
+            
             retry_results = await asyncio.gather(*retry_tasks, return_exceptions=True)
             retry_now_ts = time.time()
             retry_success_count = 0
-
+            
             for (u, p), res in zip(retry_list, retry_results):
                 u_str = str(u).strip()
                 if isinstance(res, tuple) and len(res) >= 2 and res[1]:
@@ -566,15 +567,18 @@ async def refresh_all_tokens_core(force_relogin=False):
                         "timestamp": retry_now_ts,
                         "uid": u_str
                     }
+                    success_uids.add(u_str)
                     retry_success_count += 1
-                else:
-                    # Cứu token cũ nếu login vẫn thất bại
+            
+            print(f"[{get_now_vn().strftime('%H:%M:%S')}] Thử lại hoàn tất: Thành công thêm {retry_success_count}/{len(retry_list)} tài khoản.")
+            
+            for u, p in retry_list:
+                u_str = str(u).strip()
+                if u_str not in success_uids:
                     for old_t, old_v in tokens_data.items():
                         if (old_v.get("uid") or decode_jwt_uid(old_t)) == u_str:
                             new_tokens_map[old_t] = old_v
                             break
-
-            print(f"[{get_now_vn().strftime('%H:%M:%S')}] Thử lại xong: Thêm {retry_success_count}/{len(retry_list)} acc.")
 
     with tokens_lock:
         tokens_data = new_tokens_map
@@ -582,13 +586,14 @@ async def refresh_all_tokens_core(force_relogin=False):
     last_refresh_time = time.time()
     print_dashboard()
 
-
 def trigger_6h_refresh():
     now_vn = get_now_vn()
-    if next_reset_at > 0 and abs(time.time() - next_reset_at) < 120:
-        target_time = datetime.fromtimestamp(next_reset_at + 180, VN_TZ)
+    minutes = now_vn.hour * 60 + now_vn.minute
+    # Prevent 6h token refresh during daily autolike window (04:50 AM - 05:30 AM Vietnam time GMT+7)
+    if 290 <= minutes <= 330:  # 04:50 (290m) to 05:30 (330m)
+        target_time = now_vn.replace(hour=5, minute=31, second=0, microsecond=0)
         delay_secs = max(1.0, (target_time - now_vn).total_seconds())
-        print(f"[{now_vn.strftime('%H:%M:%S')}] Hoãn refresh token 6h để tránh đụng độ reset {RESET_INTERVAL_HOURS}h. Thử lại sau {int(delay_secs)}s...")
+        print(f"[{now_vn.strftime('%H:%M:%S')}] Hoãn refresh token 6h để tránh đụng độ tiến trình Auto-Like 5h sáng (04:50 - 05:30). Thử lại sau {int(delay_secs)} giây (lúc 05:31 AM)...")
         t = threading.Timer(delay_secs, trigger_6h_refresh)
         t.daemon = True
         t.start()
@@ -601,63 +606,43 @@ def trigger_6h_refresh():
         loop.close()
     except Exception as e:
         print(f"Lỗi refresh token 6h: {e}")
-
+        
     t = threading.Timer(21600, trigger_6h_refresh)
     t.daemon = True
     t.start()
 
-
-def run_periodic_reset():
-    global tokens_data, dabuff_data, next_reset_at
-    print(f"[{get_now_vn().strftime('%H:%M:%S')}] === RESET ĐỊNH KỲ {RESET_INTERVAL_HOURS}H: XOÁ COUNT TOKEN + DANH SÁCH ĐÃ BUFF ===")
-
+def run_daily_450_reset():
+    global tokens_data, dabuff_data
+    print(f"[{get_now_vn().strftime('%H:%M:%S')}] === ĐÚNG 4H50 SÁNG VN: RESET TOÀN BỘ COUNT VÀ DANH SÁCH ĐÃ BUFF ===")
     with tokens_lock:
         for t in tokens_data:
             tokens_data[t]["count"] = 0
     save_tokens_file()
-
+    
     with dabuff_lock:
         dabuff_data = set()
     save_dabuff_file()
-
-    set_last_reset_ts(time.time())
-    next_reset_at = time.time() + RESET_INTERVAL_SECONDS
+    
+    set_last_reset_date(get_cycle_date_vn())
     print_dashboard()
-    schedule_periodic_reset()
+    schedule_daily_reset()
 
-
-def schedule_periodic_reset(delay=None):
-    global next_reset_at
-    if delay is None:
-        delay = RESET_INTERVAL_SECONDS
-    next_reset_at = time.time() + delay
-    t = threading.Timer(delay, run_periodic_reset)
+def schedule_daily_reset():
+    delay = get_seconds_until_450_am()
+    t = threading.Timer(delay, run_daily_450_reset)
     t.daemon = True
     t.start()
 
-
-def check_and_apply_periodic_reset():
-    global next_reset_at
-    last_ts = get_last_reset_ts()
-    now = time.time()
-
-    if last_ts <= 0:
-        set_last_reset_ts(now)
-        schedule_periodic_reset(RESET_INTERVAL_SECONDS)
-        print(f"[{get_now_vn().strftime('%H:%M:%S')}] Khởi tạo chu kỳ reset {RESET_INTERVAL_HOURS}h. Lần reset đầu sau {RESET_INTERVAL_HOURS}h.")
-        return False
-
-    elapsed = now - last_ts
-    if elapsed >= RESET_INTERVAL_SECONDS:
-        print(f"[{get_now_vn().strftime('%H:%M:%S')}] Đã quá hạn reset {RESET_INTERVAL_HOURS}h (elapsed {elapsed/3600:.2f}h). Reset ngay...")
-        run_periodic_reset()
+def check_and_apply_daily_reset():
+    current_cycle = get_cycle_date_vn()
+    last_reset = get_last_reset_date()
+    if not last_reset:
+        set_last_reset_date(current_cycle)
+    elif last_reset != current_cycle:
+        print(f"[{get_now_vn().strftime('%H:%M:%S')}] Chu kỳ ngày 4h50 mới ({current_cycle}, cũ: {last_reset}). Tự động reset...")
+        run_daily_450_reset()
         return True
-    else:
-        remain = RESET_INTERVAL_SECONDS - elapsed
-        schedule_periodic_reset(remain)
-        print(f"[{get_now_vn().strftime('%H:%M:%S')}] Tiếp tục chu kỳ reset {RESET_INTERVAL_HOURS}h. Còn {int(remain//60)} phút nữa reset.")
-        return False
-
+    return False
 
 async def fetch_player_info(uid_num, session):
     global info_token
@@ -705,7 +690,6 @@ async def fetch_player_info(uid_num, session):
         pass
     return None
 
-
 async def send_single_like(payload, token, session, delay):
     if delay > 0:
         await asyncio.sleep(delay)
@@ -727,37 +711,18 @@ async def send_single_like(payload, token, session, delay):
     except Exception:
         return False
 
-
-async def process_send_likes(target_uid_str, target_likes=DEFAULT_LIKES):
+async def process_send_likes(target_uid_str, target_likes=200):
     global dabuff_data, tokens_data, total_buffed_count
-
-    try:
-        target_likes = int(target_likes)
-    except (TypeError, ValueError):
-        target_likes = DEFAULT_LIKES
-    if target_likes <= 0:
-        target_likes = DEFAULT_LIKES
-    if target_likes > MAX_LIKES:
-        target_likes = MAX_LIKES
-
-    # 1. UID đã buff trong chu kỳ này -> báo max likes
+    
     with dabuff_lock:
         if target_uid_str in dabuff_data:
-            return {
-                "result": {
-                    "status": "Tài khoản đã max likes"
-                }
-            }, 200
+            return {"Failed": f"UID {target_uid_str} | Đã đạt giới hạn Max Likes hôm nay (đã buff trong ngày)"}, 200
 
-    timeout = aiohttp.ClientTimeout(total=450)
+    timeout = aiohttp.ClientTimeout(total=300)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         info_before = await fetch_player_info(int(target_uid_str), session)
         if not info_before or "likes" not in info_before:
-            return {
-                "result": {
-                    "status": "Tài khoản không tồn tại"
-                }
-            }, 200
+            return {"Failed": f"Tài khoản UID {target_uid_str} không tồn tại hoặc lỗi kết nối Garena"}, 200
 
         name = info_before.get("nickname", "Không rõ")
         before_likes = int(info_before["likes"])
@@ -771,12 +736,12 @@ async def process_send_likes(target_uid_str, target_likes=DEFAULT_LIKES):
         total_tokens_used = 0
         used_tokens_list = []
         retry_count = 0
-        max_retries = 10
+        max_retries = 5
 
         while likes_added < target_likes and retry_count < max_retries:
             missing = target_likes - likes_added
             tokens_to_pick = missing if retry_count > 0 else target_likes
-
+            
             with tokens_lock:
                 available = [
                     t for t in tokens_data
@@ -793,16 +758,14 @@ async def process_send_likes(target_uid_str, target_likes=DEFAULT_LIKES):
 
             tasks = [send_single_like(payload, t, session, idx * 0.003) for idx, t in enumerate(batch)]
             await asyncio.gather(*tasks, return_exceptions=True)
-
+            
             await asyncio.sleep(0.1)
-
+            
             info_after = await fetch_player_info(int(target_uid_str), session)
             if info_after and "likes" in info_after:
                 likes_added = int(info_after["likes"]) - before_likes
-
+            
             retry_count += 1
-            print(f"[{get_now_vn().strftime('%H:%M:%S')}] UID {target_uid_str} | "
-                  f"likes: {likes_added}/{target_likes} | retry {retry_count}/{max_retries}")
 
         with tokens_lock:
             for t in used_tokens_list:
@@ -817,26 +780,9 @@ async def process_send_likes(target_uid_str, target_likes=DEFAULT_LIKES):
         with stats_lock:
             total_buffed_count += 1
 
-        # 2. Nếu chạy xong mà like không tăng -> báo max likes
         if likes_added <= 0:
-            return {
-                "result": {
-                    "status": "Tài khoản đã max likes",
-                    "User Info": {
-                        "Account UID": target_uid_str,
-                        "Name": name,
-                        "Region": info_before.get("region", "Unknown"),
-                    },
-                    "Likes Info": {
-                        "Likes Before": before_likes,
-                        "Likes After": before_likes,
-                        "Likes Added": 0,
-                        "Likes Sent": 0,
-                    },
-                }
-            }, 200
+            return {"Failed": f"UID {target_uid_str} | Tên: {name} | Đã đạt giới hạn Max Likes hôm nay (220 likes/ngày) hoặc tài khoản không nhận like"}, 200
 
-        # 3. Thành công
         after_likes = before_likes + likes_added
         elapsed = time.time() - start_time
 
@@ -844,26 +790,23 @@ async def process_send_likes(target_uid_str, target_likes=DEFAULT_LIKES):
             "result": {
                 "User Info": {
                     "Account UID": target_uid_str,
-                    "Name": name,
-                    "Region": info_before.get("region", "Unknown"),
+                    "Account Name": name,
+                    "Account Region": info_before.get("region", "Unknown"),
                     "Account Level": info_before.get("level", "0"),
                     "Account Likes": before_likes
                 },
                 "Likes Info": {
                     "Likes Before": before_likes,
                     "Likes After": after_likes,
-                    "Likes Added": likes_added,
-                    "Likes Sent": likes_added,
+                    "Likes Added": likes_added
                 },
                 "API": {
                     "speed": f"{elapsed:.1f}s",
                     "Success": True,
                     "tokens_used": total_tokens_used
-                },
-                "TikTok": TIKTOK
+                }
             }
         }, 200
-
 
 @app.route("/info", methods=["GET"])
 def route_info():
@@ -891,20 +834,19 @@ def route_info():
     except Exception as e:
         return jsonify({"err": str(e)}), 500
 
-
 @app.route("/likes", methods=["GET"])
 def route_likes():
     u = request.args.get("uid")
     if not u:
         return jsonify({"err": "Thiếu UID"}), 400
-
+    
     count_arg = request.args.get("count")
     try:
-        count = int(count_arg) if count_arg is not None else DEFAULT_LIKES
-        if count <= 0 or count > MAX_LIKES:
-            count = DEFAULT_LIKES
+        count = int(count_arg) if count_arg is not None else 200
+        if count <= 0 or count > 200:
+            count = 200
     except ValueError:
-        count = DEFAULT_LIKES
+        count = 200
 
     try:
         loop = asyncio.new_event_loop()
@@ -913,8 +855,7 @@ def route_likes():
         loop.close()
         return jsonify(res), code
     except Exception as e:
-        return jsonify({"result": {"status": f"ERR: {e}"}}), 500
-
+        return jsonify({"err": str(e)}), 500
 
 @app.route("/refresh", methods=["GET"])
 @app.route("/rs", methods=["GET"])
@@ -934,23 +875,6 @@ def route_refresh():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-
-@app.route("/reset", methods=["GET"])
-def route_reset():
-    try:
-        run_periodic_reset()
-        with tokens_lock:
-            total_tok = len(tokens_data)
-        return jsonify({
-            "status": "success",
-            "message": f"Đã reset count token và danh sách đã buff. Chu kỳ {RESET_INTERVAL_HOURS}h bắt đầu lại từ bây giờ.",
-            "total_tokens": total_tok,
-            "next_reset_seconds": get_seconds_until_next_reset()
-        }), 200
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
 @app.route("/status", methods=["GET"])
 def route_status():
     with tokens_lock:
@@ -964,31 +888,22 @@ def route_status():
             usage_summary[str(c)] = usage_summary.get(str(c), 0) + 1
     with dabuff_lock:
         total_dabuff = len(dabuff_data)
-
+    
+    sec_450 = int(get_seconds_until_450_am())
     sec_6h = int(get_seconds_until_6h_refresh())
-    sec_reset = get_seconds_until_next_reset()
 
     return jsonify({
         "server_time_vn": get_now_vn().strftime("%Y-%m-%d %H:%M:%S"),
-        "tiktok": TIKTOK,
         "info_token_active": bool(info_token),
         "total_tokens": total_tok,
         "min_token_count": min_cnt,
         "max_token_count": max_cnt,
         "token_usage_distribution": usage_summary,
-        "dabuff_current_cycle_total": total_dabuff,
+        "dabuff_today_total": total_dabuff,
         "total_buff_sessions": total_buffed_count,
-        "likes_default": DEFAULT_LIKES,
-        "likes_max": MAX_LIKES,
-        "reset_interval_hours": RESET_INTERVAL_HOURS,
-        "next_reset_seconds": sec_reset,
-        "next_reset_at_vn": (
-            datetime.fromtimestamp(next_reset_at, VN_TZ).strftime("%Y-%m-%d %H:%M:%S")
-            if next_reset_at > 0 else ""
-        ),
         "next_6h_refresh_seconds": sec_6h,
+        "next_4h50_reset_seconds": sec_450
     }), 200
-
 
 @app.after_request
 def after_request(response):
@@ -997,7 +912,28 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
 
-
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 20000))
-    app.run(host="0.0.0.0", port=port)
+    signal.signal(signal.SIGINT, lambda s, f: os._exit(0))
+    signal.signal(signal.SIGTERM, lambda s, f: os._exit(0))
+    load_all_files()
+    check_and_apply_daily_reset()
+    
+    def start_background():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(refresh_all_tokens_core())
+        loop.close()
+    
+    t_bg = threading.Thread(target=start_background, daemon=True)
+    t_bg.start()
+    
+    t_6h = threading.Timer(21600, trigger_6h_refresh)
+    t_6h.daemon = True
+    t_6h.start()
+    
+    schedule_daily_reset()
+    
+    try:
+        app.run(host="0.0.0.0", port=20000, threaded=True, debug=False)
+    except (KeyboardInterrupt, SystemExit):
+        os._exit(0)
