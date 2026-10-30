@@ -7,8 +7,8 @@ from protobuf_decoder.protobuf_decoder import Parser
 import data_pb2
 
 INFO_ACCOUNT = {
-    "uid": "7905564142",
-    "password": "74D40DFC9B95ED827F3B"
+    "uid": "5306258672",
+    "password": "782BD682D1F427AA8744E1A266F0543D23E1D55C358CF5370AA959F020DD5584"
 }
 
 #7766520829 | xSex_3486605
